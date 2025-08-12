@@ -14,33 +14,36 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
-const dotenv_1 = __importDefault(require("dotenv"));
 const body_parser_1 = __importDefault(require("body-parser"));
 const axios_1 = __importDefault(require("axios"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-dotenv_1.default.config();
+const env_1 = require("./env");
+const db_1 = require("./db");
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 3001;
-const API_KEY = process.env.API_KEY;
-const SECRET = process.env.JWT_SECRET || 'your-secret';
-const WORKSPACE_ID = process.env.DEFAULT_WORKSPACE_ID || 'default-workspace-id';
-const JWT_EXPIRATION = process.env.JWT_EXPIRATION || '1d';
+const { ANYTHINGLLM_URL, API_KEY, PORT, JWT_SECRET, JWT_EXPIRATION, DEFAULT_WORKSPACE_ID } = env_1.ENV;
 app.use((0, cors_1.default)());
 app.use(body_parser_1.default.json());
+let db = (0, db_1.initDB)();
+(0, db_1.createTables)(db);
 function generateSessionToken(workspaceId, threadId) {
-    return jsonwebtoken_1.default.sign({ workspaceId, threadId }, SECRET, { expiresIn: JWT_EXPIRATION });
+    return jsonwebtoken_1.default.sign({ workspaceId, threadId }, JWT_SECRET, { expiresIn: JWT_EXPIRATION });
 }
 function verifySessionToken(token) {
-    return jsonwebtoken_1.default.verify(token, SECRET);
+    const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
+    if (typeof decoded === 'string' || !decoded) {
+        throw new Error('Invalid token payload');
+    }
+    return decoded;
 }
 app.post('/session', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     try {
-        const createThreadRes = yield axios_1.default.post(`${process.env.ANYTHINGLLM_URL}/api/v1/workspace/${WORKSPACE_ID}/thread/new`, {}, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
+        const createThreadRes = yield axios_1.default.post(`${ANYTHINGLLM_URL}/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/new`, {}, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
         const threadId = (_a = createThreadRes.data) === null || _a === void 0 ? void 0 : _a.thread.slug;
         if (!threadId)
             throw new Error('Thread creation failed');
-        const token = generateSessionToken(WORKSPACE_ID, threadId);
+        (0, db_1.addThread)(db, DEFAULT_WORKSPACE_ID, threadId);
+        const token = generateSessionToken(DEFAULT_WORKSPACE_ID, threadId);
         res.json({ token });
     }
     catch (err) {
@@ -49,19 +52,20 @@ app.post('/session', (req, res) => __awaiter(void 0, void 0, void 0, function* (
     }
 }));
 app.post('/chat', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { message, token } = req.body;
+    var _a;
+    const token = (_a = req.headers.authorization) === null || _a === void 0 ? void 0 : _a.split(' ')[1];
+    const { message } = req.body;
     if (!message || !token)
         return res.status(400).json({ error: 'Missing message or token' });
     try {
         const payload = verifySessionToken(token);
         const { workspaceId, threadId } = payload;
-        const llmResponse = yield axios_1.default.post(`${process.env.ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chat`, {
+        const llmResponse = yield axios_1.default.post(`${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chat`, {
             "message": message,
             "mode": "chat",
             "userId": 2,
-            "reset": true
+            "reset": false
         }, { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
-        console.log(llmResponse.data);
         res.json({ response: llmResponse.data.textResponse });
     }
     catch (err) {
@@ -69,21 +73,33 @@ app.post('/chat', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
         res.status(500).json({ error: 'Chat failed or invalid token' });
     }
 }));
+app.get('/history', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    const token = (_a = req.headers.authorization) === null || _a === void 0 ? void 0 : _a.split(' ')[1];
+    if (!token)
+        return res.status(400).json({ error: 'Missing token' });
+    const { workspaceId, threadId } = verifySessionToken(token);
+    const response = yield axios_1.default.get(`${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chats`, { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
+    const data = response.data;
+    const history = data.history.map((item) => {
+        const { role, content, sentAt, chatId } = item;
+        return { role, content, sentAt, chatId };
+    });
+    res.json({ history });
+}));
 app.post('/reset', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
-    const { token } = req.body;
+    const token = (_a = req.headers.authorization) === null || _a === void 0 ? void 0 : _a.split(' ')[1];
     if (!token)
         return res.status(400).json({ error: 'Missing token' });
     try {
         const payload = verifySessionToken(token);
         const { workspaceId, threadId } = payload;
-        yield axios_1.default.delete(`${process.env.ANYTHINGLLM_URL}/api/v1/workspace/${WORKSPACE_ID}/thread/${threadId}`, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
-        const createThreadRes = yield axios_1.default.post(`${process.env.ANYTHINGLLM_URL}/api/v1/workspace/${WORKSPACE_ID}/thread/new`, {}, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
-        const newThreadId = (_a = createThreadRes.data) === null || _a === void 0 ? void 0 : _a.thread.slug;
-        if (!newThreadId)
-            throw new Error('New thread creation failed');
-        const newToken = generateSessionToken(workspaceId, newThreadId);
-        res.json({ token: newToken });
+        const response = yield axios_1.default.delete(`${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}`, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } });
+        if (!response)
+            throw new Error('Thread deletion failed');
+        (0, db_1.deleteThreadRecord)(db, threadId);
+        res.json({ message: 'Thread deleted successfully' });
     }
     catch (err) {
         console.error('Reset error:', err);

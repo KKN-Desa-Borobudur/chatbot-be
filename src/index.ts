@@ -53,6 +53,18 @@ app.post('/session', async (req, res) => {
         const threadId = createThreadRes.data?.thread.slug;
         if (!threadId) throw new Error('Thread creation failed');
 
+        // create first message
+        await axios.post(
+            `${ANYTHINGLLM_URL}/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/${threadId}/chat`,
+            {
+                "message": "Halo",
+                "mode": "chat",
+                "userId": 2,
+                "reset": false
+            },
+            { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
+        );
+
         addThread(db, DEFAULT_WORKSPACE_ID, threadId);
 
         const token = generateSessionToken(DEFAULT_WORKSPACE_ID, threadId);

@@ -24,6 +24,7 @@ function parseDuration(duration: string): number {
 
     const expirationMs = parseDuration(JWT_EXPIRATION);
     const oldThreads = getOldThreads(db, expirationMs);
+    console.log(expirationMs)
     for (const t of oldThreads) {
         await axios.delete(
             `${ANYTHINGLLM_URL}/api/v1/workspace/${t.workspaceId}/thread/${t.threadId}`,

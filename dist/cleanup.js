@@ -35,6 +35,7 @@ function parseDuration(duration) {
     const db = (0, db_1.initDB)();
     const expirationMs = parseDuration(JWT_EXPIRATION);
     const oldThreads = (0, db_1.getOldThreads)(db, expirationMs);
+    console.log(expirationMs);
     for (const t of oldThreads) {
         yield axios_1.default.delete(`${ANYTHINGLLM_URL}/api/v1/workspace/${t.workspaceId}/thread/${t.threadId}`, {
             headers: { Authorization: `Bearer ${API_KEY}` }

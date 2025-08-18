@@ -1,10 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
-import axios from 'axios';
 import jwt from 'jsonwebtoken';
 
 import { ENV } from './env';
+import API from './api';
 import { initDB, createTables, addThread, deleteThreadRecord } from './db';
 
 const app = express();
@@ -42,32 +42,54 @@ function verifySessionToken(token: string): tokenPayload {
     return decoded as tokenPayload;
 }
 
+async function createNewThread() {
+    const createThreadRes = await API.post(`/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/new`, {})
+
+    // check if the thread is created successfully
+    if (!createThreadRes.data || !createThreadRes.data.thread || !createThreadRes.data.thread.slug) {
+        throw new Error('Failed to create thread');
+    }
+    const threadId = createThreadRes.data?.thread.slug;
+    await API.post(
+        `/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/${threadId}/chat`,
+        {
+            "message": "Halo",
+            "mode": "chat",
+            "userId": 2,
+            "reset": false
+        }
+    )
+    addThread(db, DEFAULT_WORKSPACE_ID, threadId);
+
+    const token = generateSessionToken(DEFAULT_WORKSPACE_ID, threadId);
+    return token;
+}
+
 app.post('/session', async (req, res) => {
     try {
-        const createThreadRes = await axios.post(
-            `${ANYTHINGLLM_URL}/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/new`,
-            { },
-            { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
-        );
+        let token = req.headers.authorization?.split(' ')[1];
 
-        const threadId = createThreadRes.data?.thread.slug;
-        if (!threadId) throw new Error('Thread creation failed');
+        // if the token is not existed, create a new thread
+        if (!token) {
+            token = await createNewThread();
+            res.json({ token });
+            return;
+        }
 
-        // create first message
-        await axios.post(
-            `${ANYTHINGLLM_URL}/api/v1/workspace/${DEFAULT_WORKSPACE_ID}/thread/${threadId}/chat`,
-            {
-                "message": "Halo",
-                "mode": "chat",
-                "userId": 2,
-                "reset": false
-            },
-            { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
-        );
+        let payload: tokenPayload;
 
-        addThread(db, DEFAULT_WORKSPACE_ID, threadId);
+        if (token){
+            try{
+                payload = verifySessionToken(token);
+            } catch(err){
+                token = await createNewThread();
+                res.json({ token });
+                return;
+            }
+            res.json({token});
+            return;
+        }
 
-        const token = generateSessionToken(DEFAULT_WORKSPACE_ID, threadId);
         res.json({ token });
     } catch (err) {
         console.error('Error creating session:', err);
@@ -82,18 +104,18 @@ app.post('/chat', async (req, res) => {
 
     try {
         const payload = verifySessionToken(token);
+
         const { workspaceId, threadId } = payload;
 
-        const llmResponse = await axios.post(
-            `${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chat`,
+        const llmResponse = await API.post(
+            `/api/v1/workspace/${workspaceId}/thread/${threadId}/chat`,
             {
                 "message": message,
                 "mode": "chat",
                 "userId": 2,
                 "reset": false
             },
-            { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
-        );
+        )
         
         res.json({ response: llmResponse.data.textResponse });
     } catch (err) {
@@ -105,22 +127,27 @@ app.post('/chat', async (req, res) => {
 app.get('/history', async (req, res) => {              
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(400).json({ error: 'Missing token' });
-    const { workspaceId, threadId } = verifySessionToken(token as string);
 
-    const response = await axios.get(
-        `${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chats`,
-        { headers: { 'Content-Type': 'application/json', 'accept': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
-    );
+    try{
+        const { workspaceId, threadId } = verifySessionToken(token as string);
 
-    const data = response.data;
+        const response = await API.get(
+            `${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}/chats`
+        );
 
-    const history: chat[] = data.history.map((item: { role: string, content: string, sentAt: number, chatId: number }) => {
-        const { role, content, sentAt, chatId } = item;
-        return { role, content, sentAt, chatId };
-    });
+        const data = response.data;
+
+        const history: chat[] = data.history.map((item: { role: string, content: string, sentAt: number, chatId: number }) => {
+            const { role, content, sentAt, chatId } = item;
+            return { role, content, sentAt, chatId };
+        });
 
 
-    res.json({ history });
+        res.json({ history });
+    }catch (err) {
+        res.status(500).json({ error: 'Failed to fetch history or invalid token' });
+        console.error('History fetch error:', err);
+    }
 })
 
 app.post('/reset', async (req, res) => {
@@ -131,9 +158,8 @@ app.post('/reset', async (req, res) => {
         const payload = verifySessionToken(token);
         const { workspaceId, threadId } = payload;
 
-        const response = await axios.delete(
-            `${ANYTHINGLLM_URL}/api/v1/workspace/${workspaceId}/thread/${threadId}`,
-            { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` } }
+        const response = await API.delete(
+            `/api/v1/workspace/${workspaceId}/thread/${threadId}`
         );
 
         if (!response) throw new Error('Thread deletion failed');
